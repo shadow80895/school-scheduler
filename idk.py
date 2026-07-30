@@ -3,7 +3,7 @@ import mysql.connector
 import streamlit as st
 
 
-# Database connection
+# Database connection with a 5-second timeout to prevent UI freezes
 def get_db_connection():
     try:
         connection = mysql.connector.connect(
@@ -12,6 +12,7 @@ def get_db_connection():
             user="avnadmin",
             password="AVNS_QcMH792wuF0McXRXNc1",
             database="defaultdb",
+            connection_timeout=5,
         )
         return connection
     except mysql.connector.Error as err:
@@ -19,14 +20,14 @@ def get_db_connection():
         return None
 
 
-# Setup tables and default admin account
+# Cache the database setup so it runs only once on startup
+@st.cache_resource
 def setup_default_admin():
     conn = get_db_connection()
     if not conn:
         return
     cursor = conn.cursor()
     try:
-        # Create all required tables automatically if they don't exist
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS admin (
@@ -191,7 +192,7 @@ else:
     ]
     choice = st.sidebar.selectbox("Navigation", menu)
 
-    # Reminders
+    # Dashboard
     if choice == "Dashboard & Reminders":
         st.header("🔔 Upcoming Assignments & Tests")
         conn = get_db_connection()
@@ -287,32 +288,188 @@ else:
                 "SELECT student_id, name, roll_number FROM students"
             )
             students = cursor.fetchall()
-            for s_id, name, roll in students:
-                with st.expander(f"Student: {name} | Roll No: {roll}"):
-                    cursor.execute(
-                        "SELECT status FROM attendance WHERE student_id = %s",
-                        (s_id,),
-                    )
-                    att = cursor.fetchall()
-                    if att:
-                        presents = sum(
-                            1 for status in att if status[0] == "Present"
+            if not students:
+                st.info("No students registered yet.")
+            else:
+                for s_id, name, roll in students:
+                    with st.expander(f"Student: {name} | Roll No: {roll}"):
+                        cursor.execute(
+                            "SELECT status FROM attendance WHERE student_id ="
+                            " %s",
+                            (s_id,),
                         )
-                        st.write(
-                            f"**Attendance:** {presents}/{len(att)} days"
-                            f" ({(presents/len(att))*100:.1f}%)"
-                        )
+                        att = cursor.fetchall()
+                        if att:
+                            presents = sum(
+                                1 for status in att if status[0] == "Present"
+                            )
+                            st.write(
+                                f"**Attendance:** {presents}/{len(att)} days"
+                                f" ({(presents/len(att))*100:.1f}%)"
+                            )
+                        else:
+                            st.write("**Attendance:** No records found.")
 
-                    marks_q = """
-                        SELECT a.title, m.marks_obtained, a.total_marks
-                        FROM student_marks m
-                        JOIN assessments a ON m.assessment_id = a.assessment_id
-                        WHERE m.student_id = %s
-                    """
-                    cursor.execute(marks_q, (s_id,))
-                    marks = cursor.fetchall()
-                    for title, score, total in marks:
-                        st.write(f"- {title}: **{score}/{total}**")
+                        marks_q = """
+                            SELECT a.title, m.marks_obtained, a.total_marks
+                            FROM student_marks m
+                            JOIN assessments a ON m.assessment_id = a.assessment_id
+                            WHERE m.student_id = %s
+                        """
+                        cursor.execute(marks_q, (s_id,))
+                        marks = cursor.fetchall()
+                        if marks:
+                            st.write("**Marks:**")
+                            for title, score, total in marks:
+                                st.write(f"- {title}: **{score}/{total}**")
+                        else:
+                            st.write("**Marks:** No marks recorded.")
+            cursor.close()
+            conn.close()
+
+    # Mark Attendance
+    elif choice == "Mark Attendance":
+        st.header("📅 Mark Attendance")
+        conn = get_db_connection()
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT subject_id, subject_name FROM subjects")
+            subjects = cursor.fetchall()
+
+            cursor.execute(
+                "SELECT student_id, name, roll_number FROM students"
+            )
+            students = cursor.fetchall()
+
+            if not subjects:
+                st.warning("Please add at least one subject first.")
+            elif not students:
+                st.warning("Please add students first.")
+            else:
+                subj_dict = {f"{s[1]} (ID: {s[0]})": s[0] for s in subjects}
+                selected_subj_str = st.selectbox(
+                    "Select Subject", list(subj_dict.keys())
+                )
+                selected_subj_id = subj_dict[selected_subj_str]
+
+                att_date = st.date_input("Attendance Date", date.today())
+
+                st.subheader("Student List")
+                attendance_status = {}
+                for s_id, name, roll in students:
+                    status = st.radio(
+                        f"{name} (Roll: {roll})",
+                        ["Present", "Absent"],
+                        key=f"att_{s_id}",
+                        horizontal=True,
+                    )
+                    attendance_status[s_id] = status
+
+                if st.button("Save Attendance"):
+                    try:
+                        for s_id, status in attendance_status.items():
+                            cursor.execute(
+                                """
+                                INSERT INTO attendance (student_id, subject_id, date, status)
+                                VALUES (%s, %s, %s, %s)
+                            """,
+                                (
+                                    s_id,
+                                    selected_subj_id,
+                                    att_date.strftime("%Y-%m-%d"),
+                                    status,
+                                ),
+                            )
+                        conn.commit()
+                        st.success("Attendance saved successfully!")
+                    except mysql.connector.Error as err:
+                        st.error(f"Error saving attendance: {err}")
+
+            cursor.close()
+            conn.close()
+
+    # Record Assessment Marks
+    elif choice == "Record Assessment Marks":
+        st.header("💯 Record Assessment Marks")
+        conn = get_db_connection()
+        if conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT a.assessment_id, a.title, a.type, a.total_marks, s.subject_name
+                FROM assessments a
+                JOIN subjects s ON a.subject_id = s.subject_id
+            """
+            cursor.execute(query)
+            assessments = cursor.fetchall()
+
+            cursor.execute(
+                "SELECT student_id, name, roll_number FROM students"
+            )
+            students = cursor.fetchall()
+
+            if not assessments:
+                st.warning("Please create a test or assignment first.")
+            elif not students:
+                st.warning("Please add students first.")
+            else:
+                ass_dict = {
+                    f"[{a[2].upper()}] {a[1]} ({a[4]}) - Max Marks: {a[3]}": (
+                        a[0],
+                        a[3],
+                    )
+                    for a in assessments
+                }
+                selected_ass_str = st.selectbox(
+                    "Select Assessment", list(ass_dict.keys())
+                )
+                selected_ass_id, total_marks = ass_dict[selected_ass_str]
+
+                st.subheader("Enter Marks Obtained")
+                marks_dict = {}
+                for s_id, name, roll in students:
+                    marks = st.number_input(
+                        f"{name} (Roll: {roll})",
+                        min_value=0,
+                        max_value=total_marks,
+                        value=0,
+                        key=f"mark_{s_id}",
+                    )
+                    marks_dict[s_id] = marks
+
+                if st.button("Save Marks"):
+                    try:
+                        for s_id, obtained in marks_dict.items():
+                            # Check if marks already recorded for this student & assessment
+                            cursor.execute(
+                                """
+                                SELECT mark_id FROM student_marks 
+                                WHERE student_id = %s AND assessment_id = %s
+                            """,
+                                (s_id, selected_ass_id),
+                            )
+                            existing = cursor.fetchone()
+
+                            if existing:
+                                cursor.execute(
+                                    """
+                                    UPDATE student_marks SET marks_obtained = %s 
+                                    WHERE mark_id = %s
+                                """,
+                                    (obtained, existing[0]),
+                                )
+                            else:
+                                cursor.execute(
+                                    """
+                                    INSERT INTO student_marks (student_id, assessment_id, marks_obtained)
+                                    VALUES (%s, %s, %s)
+                                """,
+                                    (s_id, selected_ass_id, obtained),
+                                )
+                        conn.commit()
+                        st.success("Marks recorded successfully!")
+                    except mysql.connector.Error as err:
+                        st.error(f"Error saving marks: {err}")
+
             cursor.close()
             conn.close()
 
