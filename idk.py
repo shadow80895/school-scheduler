@@ -1,14 +1,16 @@
 from datetime import date
 import mysql.connector
 import streamlit as st
-#password
+
+
+# Database connection
 def get_db_connection():
     try:
         connection = mysql.connector.connect(
             host="mysql-327a1c97-school-scheduler.j.aivencloud.com",
             port=24033,
             user="avnadmin",
-            password="AVNS_QcMH792wuF0McXRXNc1", 
+            password="AVNS_QcMH792wuF0McXRXNc1",
             database="defaultdb",
         )
         return connection
@@ -17,12 +19,85 @@ def get_db_connection():
         return None
 
 
+# Setup tables and default admin account
 def setup_default_admin():
     conn = get_db_connection()
     if not conn:
         return
     cursor = conn.cursor()
     try:
+        # Create all required tables automatically if they don't exist
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS admin (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(255) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL
+            );
+        """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS students (
+                student_id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                roll_number VARCHAR(100) UNIQUE NOT NULL
+            );
+        """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subjects (
+                subject_id INT AUTO_INCREMENT PRIMARY KEY,
+                subject_name VARCHAR(255) NOT NULL
+            );
+        """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS assessments (
+                assessment_id INT AUTO_INCREMENT PRIMARY KEY,
+                subject_id INT,
+                title VARCHAR(255) NOT NULL,
+                type VARCHAR(50),
+                due_date DATE,
+                total_marks INT,
+                FOREIGN KEY (subject_id) REFERENCES subjects(subject_id) ON DELETE CASCADE
+            );
+        """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS student_marks (
+                mark_id INT AUTO_INCREMENT PRIMARY KEY,
+                student_id INT,
+                assessment_id INT,
+                marks_obtained INT,
+                FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
+                FOREIGN KEY (assessment_id) REFERENCES assessments(assessment_id) ON DELETE CASCADE
+            );
+        """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance (
+                attendance_id INT AUTO_INCREMENT PRIMARY KEY,
+                student_id INT,
+                subject_id INT,
+                date DATE,
+                status VARCHAR(20),
+                FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
+                FOREIGN KEY (subject_id) REFERENCES subjects(subject_id) ON DELETE CASCADE
+            );
+        """
+        )
+
+        # Insert/update default admin account
         cursor.execute("SELECT * FROM admin WHERE username = 'admin'")
         if cursor.fetchone():
             cursor.execute(
@@ -35,7 +110,7 @@ def setup_default_admin():
             )
         conn.commit()
     except mysql.connector.Error as err:
-        st.error(f"Error setting up admin: {err}")
+        st.error(f"Error setting up tables or admin: {err}")
     finally:
         cursor.close()
         conn.close()
@@ -43,7 +118,7 @@ def setup_default_admin():
 
 setup_default_admin()
 
-#login steup
+# Login setup
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
 if "role" not in st.session_state:
@@ -64,12 +139,13 @@ def verify_admin(username, password):
     conn.close()
     return user is not None
 
+
 st.set_page_config(
     page_title="School Management System", page_icon="🎓", layout="wide"
 )
 st.title("🎓 School Management System")
 
-# login View
+# Login View
 if not st.session_state["logged_in"]:
     st.subheader("Select Login Type")
     login_type = st.radio("Choose Role:", ["Teacher", "Head Teacher (Admin)"])
@@ -92,9 +168,8 @@ if not st.session_state["logged_in"]:
             else:
                 st.error("Invalid Username or Password!")
 
-#maindisplay--
+# Main App View
 else:
-
     st.sidebar.title(f"Logged in as: {st.session_state['role'].upper()}")
     if st.sidebar.button("Logout"):
         st.session_state["logged_in"] = False
@@ -116,7 +191,7 @@ else:
     ]
     choice = st.sidebar.selectbox("Navigation", menu)
 
-#reminders
+    # Reminders
     if choice == "Dashboard & Reminders":
         st.header("🔔 Upcoming Assignments & Tests")
         conn = get_db_connection()
@@ -144,7 +219,7 @@ else:
             cursor.close()
             conn.close()
 
-#rollno
+    # Search Student
     elif choice == "Search Student by Roll":
         st.header("🔍 Search Student")
         search_query = st.text_input("Enter Roll Number or Name")
@@ -167,7 +242,6 @@ else:
                     for s_id, name, roll in students:
                         st.subheader(f"📌 {name} (Roll No: {roll})")
 
-                        # attendance
                         cursor.execute(
                             "SELECT status FROM attendance WHERE student_id ="
                             " %s",
@@ -186,7 +260,6 @@ else:
                         else:
                             st.write("**Attendance:** No records found.")
 
-                        # marksss
                         marks_q = """
                             SELECT a.title, m.marks_obtained, a.total_marks
                             FROM student_marks m
@@ -204,7 +277,7 @@ else:
                 cursor.close()
                 conn.close()
 
-    #  VIEW REPORTS
+    # View Reports
     elif choice == "View Reports":
         st.header("📊 Student Performance Reports")
         conn = get_db_connection()
@@ -216,7 +289,6 @@ else:
             students = cursor.fetchall()
             for s_id, name, roll in students:
                 with st.expander(f"Student: {name} | Roll No: {roll}"):
-                    # attendance
                     cursor.execute(
                         "SELECT status FROM attendance WHERE student_id = %s",
                         (s_id,),
@@ -231,7 +303,6 @@ else:
                             f" ({(presents/len(att))*100:.1f}%)"
                         )
 
-
                     marks_q = """
                         SELECT a.title, m.marks_obtained, a.total_marks
                         FROM student_marks m
@@ -245,7 +316,7 @@ else:
             cursor.close()
             conn.close()
 
-#assignments
+    # Create Assessment
     elif choice == "Create Test / Assignment":
         st.header("📝 Create Test or Assignment")
         conn = get_db_connection()
@@ -286,7 +357,7 @@ else:
             cursor.close()
             conn.close()
 
-#del assignments
+    # Delete Assessment
     elif choice == "Delete / Undo Test or Assignment":
         st.header("🗑️ Delete / Undo Test or Assignment")
         conn = get_db_connection()
@@ -314,13 +385,11 @@ else:
                 if st.button("Delete Assessment", type="primary"):
                     aid_to_delete = ass_dict[selected_ass]
                     try:
-                        
                         cursor.execute(
                             "DELETE FROM student_marks WHERE assessment_id ="
                             " %s",
                             (aid_to_delete,),
                         )
-                   
                         cursor.execute(
                             "DELETE FROM assessments WHERE assessment_id = %s",
                             (aid_to_delete,),
@@ -335,7 +404,7 @@ else:
             cursor.close()
             conn.close()
 
-#admin only
+    # Add Student
     elif choice == "Add Student (Admin)":
         st.header("➕ Add New Student")
         if st.session_state["role"] != "admin":
@@ -361,7 +430,7 @@ else:
                         cursor.close()
                         conn.close()
 
-#admin only 
+    # Delete Student
     elif choice == "Delete Student (Admin)":
         st.header("🗑️ Delete Student")
         if st.session_state["role"] != "admin":
@@ -422,7 +491,7 @@ else:
                 cursor.close()
                 conn.close()
 
-#add subjects
+    # Add Subject
     elif choice == "Add Subject (Admin)":
         st.header("📘 Add New Subject")
         if st.session_state["role"] != "admin":
@@ -448,7 +517,7 @@ else:
                         cursor.close()
                         conn.close()
 
-#del subjects
+    # Delete Subject
     elif choice == "Delete Subject (Admin)":
         st.header("🗑️ Delete Subject")
         if st.session_state["role"] != "admin":
@@ -480,7 +549,6 @@ else:
                         if confirm:
                             sub_id_to_delete = subj_dict[selected_subj]
                             try:
-                                
                                 cursor.execute(
                                     "SELECT assessment_id FROM assessments"
                                     " WHERE subject_id = %s",
@@ -488,7 +556,6 @@ else:
                                 )
                                 ass_ids = [row[0] for row in cursor.fetchall()]
 
-                                
                                 for aid in ass_ids:
                                     cursor.execute(
                                         "DELETE FROM student_marks WHERE"
@@ -496,7 +563,6 @@ else:
                                         (aid,),
                                     )
 
-                                
                                 cursor.execute(
                                     "DELETE FROM assessments WHERE subject_id ="
                                     " %s",
