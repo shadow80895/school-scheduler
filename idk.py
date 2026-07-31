@@ -1,62 +1,105 @@
 from datetime import date
+import bcrypt
 import mysql.connector
+from mysql.connector import pooling
 import pandas as pd
 import streamlit as st
 
+# ---------------- APP CONFIG ----------------
+st.set_page_config(
+    page_title="School Portal",
+    page_icon="🏫",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-# Database connection
-def get_db_connection():
+# Initialize Session State
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+if "role" not in st.session_state:
+    st.session_state["role"] = None
+
+
+# ---------------- DATABASE POOLING ----------------
+@st.cache_resource
+def get_db_pool():
+    """Create and cache the database connection pool using st.secrets."""
     try:
-        connection = mysql.connector.connect(
-            host="mysql-327a1c97-school-scheduler.j.aivencloud.com",
-            port=24033,
-            user="avnadmin",
-            password="AVNS_QcMH792wuF0McXRXNc1",
-            database="defaultdb",
+        db_config = st.secrets["mysql"]
+        pool = pooling.MySQLConnectionPool(
+            pool_name="school_pool",
+            pool_size=5,
+            pool_reset_session=True,
+            host=db_config["host"],
+            port=int(db_config["port"]),
+            user=db_config["user"],
+            password=db_config["password"],
+            database=db_config["database"],
             connection_timeout=5,
         )
-        return connection
-    except mysql.connector.Error as err:
-        st.error(f"Error connecting to cloud database: {err}")
+        return pool
+    except Exception as err:
+        st.error(
+            f"Error initializing database pool. Check `.streamlit/secrets.toml`: {err}"
+        )
         return None
 
 
-# Cache setup
+def get_db_connection():
+    """Retrieve a connection from the connection pool."""
+    pool = get_db_pool()
+    if pool:
+        try:
+            return pool.get_connection()
+        except mysql.connector.Error as err:
+            st.error(f"Could not fetch database connection: {err}")
+    return None
+
+
+# ---------------- HELPER FUNCTIONS & AUTH ----------------
+def hash_password(password: str) -> str:
+    """Hash a password using bcrypt."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode(
+        "utf-8"
+    )
+
+
+def verify_password(password: str, hashed_password: str) -> bool:
+    """Verify a password against its bcrypt hash."""
+    return bcrypt.checkpw(
+        password.encode("utf-8"), hashed_password.encode("utf-8")
+    )
+
+
 @st.cache_resource
-def setup_default_admin():
+def setup_database_schema():
+    """Initialize database tables and set up default hashed admin password."""
     conn = get_db_connection()
     if not conn:
         return
     cursor = conn.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS admin (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 username VARCHAR(255) UNIQUE NOT NULL,
                 password VARCHAR(255) NOT NULL
             );
-        """
-        )
-        cursor.execute(
-            """
+        """)
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS students (
                 student_id INT AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
                 roll_number VARCHAR(100) UNIQUE NOT NULL
             );
-        """
-        )
-        cursor.execute(
-            """
+        """)
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS subjects (
                 subject_id INT AUTO_INCREMENT PRIMARY KEY,
-                subject_name VARCHAR(255) NOT NULL
+                subject_name VARCHAR(255) UNIQUE NOT NULL
             );
-        """
-        )
-        cursor.execute(
-            """
+        """)
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS assessments (
                 assessment_id INT AUTO_INCREMENT PRIMARY KEY,
                 subject_id INT,
@@ -66,10 +109,8 @@ def setup_default_admin():
                 total_marks INT,
                 FOREIGN KEY (subject_id) REFERENCES subjects(subject_id) ON DELETE CASCADE
             );
-        """
-        )
-        cursor.execute(
-            """
+        """)
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS student_marks (
                 mark_id INT AUTO_INCREMENT PRIMARY KEY,
                 student_id INT,
@@ -78,10 +119,8 @@ def setup_default_admin():
                 FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
                 FOREIGN KEY (assessment_id) REFERENCES assessments(assessment_id) ON DELETE CASCADE
             );
-        """
-        )
-        cursor.execute(
-            """
+        """)
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS attendance (
                 attendance_id INT AUTO_INCREMENT PRIMARY KEY,
                 student_id INT,
@@ -91,56 +130,47 @@ def setup_default_admin():
                 FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
                 FOREIGN KEY (subject_id) REFERENCES subjects(subject_id) ON DELETE CASCADE
             );
-        """
+        """)
+
+        # Ensure default 'admin' user exists with a hashed password ('root')
+        cursor.execute(
+            "SELECT password FROM admin WHERE username = 'admin'"
         )
-        cursor.execute("SELECT * FROM admin WHERE username = 'admin'")
-        if cursor.fetchone():
+        row = cursor.fetchone()
+        hashed_root = hash_password("root")
+
+        if not row:
             cursor.execute(
-                "UPDATE admin SET password = 'root' WHERE username = 'admin'"
-            )
-        else:
-            cursor.execute(
-                "INSERT INTO admin (username, password) VALUES ('admin',"
-                " 'root')"
+                "INSERT INTO admin (username, password) VALUES ('admin', %s)",
+                (hashed_root,),
             )
         conn.commit()
     except mysql.connector.Error as err:
-        st.error(f"Error setting up tables or admin: {err}")
+        st.error(f"Error setting up database tables: {err}")
     finally:
         cursor.close()
         conn.close()
 
 
-setup_default_admin()
-
-# App Config
-st.set_page_config(
-    page_title="School Portal",
-    page_icon="🏫",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-if "logged_in" not in st.session_state:
-    st.session_state["logged_in"] = False
-if "role" not in st.session_state:
-    st.session_state["role"] = None
-
-
 def verify_admin(username, password):
+    """Authenticate admin credentials using bcrypt verification."""
     conn = get_db_connection()
     if not conn:
         return False
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT * FROM admin WHERE username = %s AND password = %s",
-        (username, password),
+        "SELECT password FROM admin WHERE username = %s", (username,)
     )
     user = cursor.fetchone()
     cursor.close()
     conn.close()
-    return user is not None
 
+    if user and verify_password(password, user[0]):
+        return True
+    return False
+
+
+setup_database_schema()
 
 # ---------------- LOGIN SCREEN ----------------
 if not st.session_state["logged_in"]:
@@ -230,7 +260,6 @@ else:
             cursor.execute("SELECT COUNT(*) FROM assessments")
             total_assessments = cursor.fetchone()[0]
 
-            # Metric Cards
             m1, m2, m3 = st.columns(3)
             m1.metric(label="Total Students", value=total_students)
             m2.metric(label="Active Subjects", value=total_subjects)
@@ -267,7 +296,7 @@ else:
         search_query = st.text_input(
             "Enter Student Name or Roll Number",
             placeholder="Type here to search...",
-        )
+        ).strip()
 
         if search_query:
             conn = get_db_connection()
@@ -276,7 +305,7 @@ else:
                 query = """
                     SELECT student_id, name, roll_number 
                     FROM students 
-                    WHERE LOWER(TRIM(CAST(roll_number AS CHAR))) = LOWER(TRIM(%s))
+                    WHERE LOWER(TRIM(CAST(roll_number AS CHAR))) = LOWER(%s)
                        OR LOWER(name) LIKE LOWER(%s)
                 """
                 cursor.execute(query, (search_query, f"%{search_query}%"))
@@ -331,8 +360,8 @@ else:
                                     columns=[
                                         "Assessment",
                                         "Subject",
-                                        "Marks",
-                                        "Total",
+                                        "Marks Scored",
+                                        "Total Marks",
                                     ],
                                 )
                                 c2.dataframe(
@@ -360,7 +389,9 @@ else:
             students = cursor.fetchall()
 
             if not subjects or not students:
-                st.warning("Please add subjects and students first.")
+                st.warning(
+                    "Please ensure subjects and students exist in the system."
+                )
             else:
                 col1, col2 = st.columns(2)
                 subj_dict = {f"{s[1]} (ID: {s[0]})": s[0] for s in subjects}
@@ -370,36 +401,50 @@ else:
                 att_date = col2.date_input("Attendance Date", date.today())
 
                 st.divider()
-                st.write("### Student Roster")
 
-                attendance_status = {}
-                for s_id, name, roll in students:
-                    with st.container(border=True):
-                        col_a, col_b = st.columns([2, 1])
-                        col_a.write(f"**{name}** (Roll: `{roll}`)")
-                        status = col_b.radio(
+                # Build Editable DataFrame
+                df_roster = pd.DataFrame(
+                    students, columns=["Student ID", "Name", "Roll Number"]
+                )
+                df_roster["Status"] = "Present"
+
+                edited_df = st.data_editor(
+                    df_roster[["Student ID", "Name", "Roll Number", "Status"]],
+                    column_config={
+                        "Student ID": st.column_config.NumberColumn(
+                            disabled=True
+                        ),
+                        "Name": st.column_config.TextColumn(disabled=True),
+                        "Roll Number": st.column_config.TextColumn(
+                            disabled=True
+                        ),
+                        "Status": st.column_config.SelectboxColumn(
                             "Status",
-                            ["Present", "Absent"],
-                            key=f"att_{s_id}",
-                            horizontal=True,
-                            label_visibility="collapsed",
-                        )
-                        attendance_status[s_id] = status
+                            options=["Present", "Absent"],
+                            required=True,
+                        ),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                )
 
                 if st.button(
                     "Save Attendance", type="primary", use_container_width=True
                 ):
-                    for s_id, status in attendance_status.items():
+                    sub_id = subj_dict[selected_subj_str]
+                    formatted_date = att_date.strftime("%Y-%m-%d")
+
+                    for _, row in edited_df.iterrows():
                         cursor.execute(
                             """
                             INSERT INTO attendance (student_id, subject_id, date, status)
                             VALUES (%s, %s, %s, %s)
                         """,
                             (
-                                s_id,
-                                subj_dict[selected_subj_str],
-                                att_date.strftime("%Y-%m-%d"),
-                                status,
+                                int(row["Student ID"]),
+                                sub_id,
+                                formatted_date,
+                                row["Status"],
                             ),
                         )
                     conn.commit()
@@ -434,12 +479,10 @@ else:
                             presents = sum(
                                 1 for status in att if status[0] == "Present"
                             )
+                            rate = presents / len(att)
                             st.progress(
-                                presents / len(att),
-                                text=(
-                                    f"Attendance Rate:"
-                                    f" {(presents/len(att))*100:.1f}%"
-                                ),
+                                rate,
+                                text=f"Attendance Rate: {rate * 100:.1f}%",
                             )
 
                         marks_q = """
@@ -496,30 +539,51 @@ else:
                 selected_ass_id, total_marks = ass_dict[selected_ass_str]
 
                 st.divider()
-                marks_dict = {}
-                for s_id, name, roll in students:
-                    col_x, col_y = st.columns([2, 1])
-                    col_x.write(f"**{name}** (`Roll: {roll}`)")
-                    marks = col_y.number_input(
-                        f"Marks (Max {total_marks})",
-                        min_value=0,
-                        max_value=total_marks,
-                        value=0,
-                        key=f"m_{s_id}",
-                        label_visibility="collapsed",
-                    )
-                    marks_dict[s_id] = marks
+
+                # Build Interactive Data Editor for Batch Entry
+                df_marks_entry = pd.DataFrame(
+                    students, columns=["Student ID", "Name", "Roll Number"]
+                )
+                df_marks_entry["Marks Obtained"] = 0
+
+                edited_marks_df = st.data_editor(
+                    df_marks_entry[
+                        ["Student ID", "Name", "Roll Number", "Marks Obtained"]
+                    ],
+                    column_config={
+                        "Student ID": st.column_config.NumberColumn(
+                            disabled=True
+                        ),
+                        "Name": st.column_config.TextColumn(disabled=True),
+                        "Roll Number": st.column_config.TextColumn(
+                            disabled=True
+                        ),
+                        "Marks Obtained": st.column_config.NumberColumn(
+                            "Marks Obtained",
+                            min_value=0,
+                            max_value=total_marks,
+                            step=1,
+                            required=True,
+                        ),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                )
 
                 if st.button(
                     "Save Marks", type="primary", use_container_width=True
                 ):
-                    for s_id, obtained in marks_dict.items():
+                    for _, row in edited_marks_df.iterrows():
+                        s_id = int(row["Student ID"])
+                        obtained = int(row["Marks Obtained"])
+
                         cursor.execute(
                             "SELECT mark_id FROM student_marks WHERE student_id"
                             " = %s AND assessment_id = %s",
                             (s_id, selected_ass_id),
                         )
                         existing = cursor.fetchone()
+
                         if existing:
                             cursor.execute(
                                 "UPDATE student_marks SET marks_obtained = %s"
@@ -557,29 +621,34 @@ else:
                     selected_subj = st.selectbox(
                         "Select Subject", list(subj_dict.keys())
                     )
-                    title = st.text_input("Title", placeholder="e.g. Quiz 1")
+                    title = st.text_input(
+                        "Title", placeholder="e.g. Midterm Exam"
+                    ).strip()
                     type_ = st.selectbox("Type", ["Test", "Assignment"])
                     c1, c2 = st.columns(2)
-                    due_date = c1.date_input("Due Date")
+                    due_date = c1.date_input("Due Date", min_value=date.today())
                     total_marks = c2.number_input(
                         "Total Marks", min_value=1, value=100
                     )
 
                     if st.form_submit_button("Create Assessment"):
-                        cursor.execute(
-                            "INSERT INTO assessments (subject_id, title, type,"
-                            " due_date, total_marks) VALUES (%s, %s, %s, %s,"
-                            " %s)",
-                            (
-                                subj_dict[selected_subj],
-                                title,
-                                type_,
-                                due_date.strftime("%Y-%m-%d"),
-                                total_marks,
-                            ),
-                        )
-                        conn.commit()
-                        st.success("✅ Assessment created!")
+                        if not title:
+                            st.error("Please enter a title.")
+                        else:
+                            cursor.execute(
+                                "INSERT INTO assessments (subject_id, title,"
+                                " type, due_date, total_marks) VALUES (%s, %s,"
+                                " %s, %s, %s)",
+                                (
+                                    subj_dict[selected_subj],
+                                    title,
+                                    type_,
+                                    due_date.strftime("%Y-%m-%d"),
+                                    total_marks,
+                                ),
+                            )
+                            conn.commit()
+                            st.success("✅ Assessment created!")
             cursor.close()
             conn.close()
 
@@ -590,25 +659,34 @@ else:
             st.error("🔒 Admin permission required.")
         else:
             with st.form("add_student_form"):
-                name = st.text_input("Student Name")
-                roll = st.text_input("Roll Number")
+                name = st.text_input("Student Name").strip()
+                roll = st.text_input("Roll Number").strip()
                 if st.form_submit_button("Save Student"):
-                    conn = get_db_connection()
-                    if conn:
-                        cursor = conn.cursor()
-                        try:
-                            cursor.execute(
-                                "INSERT INTO students (name, roll_number)"
-                                " VALUES (%s, %s)",
-                                (name, roll),
-                            )
-                            conn.commit()
-                            st.success(f"✅ Student '{name}' added!")
-                        except mysql.connector.Error as err:
-                            st.error(f"Error: {err}")
-                        finally:
-                            cursor.close()
-                            conn.close()
+                    if not name or not roll:
+                        st.error("Please fill in both Name and Roll Number.")
+                    else:
+                        conn = get_db_connection()
+                        if conn:
+                            cursor = conn.cursor()
+                            try:
+                                cursor.execute(
+                                    "INSERT INTO students (name, roll_number)"
+                                    " VALUES (%s, %s)",
+                                    (name, roll),
+                                )
+                                conn.commit()
+                                st.success(f"✅ Student '{name}' added!")
+                            except mysql.connector.Error as err:
+                                if err.errno == 1062:
+                                    st.error(
+                                        "A student with this Roll Number"
+                                        " already exists."
+                                    )
+                                else:
+                                    st.error(f"Error: {err}")
+                            finally:
+                                cursor.close()
+                                conn.close()
 
     # PAGE: ADD SUBJECT
     elif choice == "📘 Add Subject (Admin)":
@@ -617,24 +695,34 @@ else:
             st.error("🔒 Admin permission required.")
         else:
             with st.form("add_subject_form"):
-                subject_name = st.text_input("Subject Name")
+                subject_name = st.text_input("Subject Name").strip()
                 if st.form_submit_button("Save Subject"):
-                    conn = get_db_connection()
-                    if conn:
-                        cursor = conn.cursor()
-                        try:
-                            cursor.execute(
-                                "INSERT INTO subjects (subject_name) VALUES"
-                                " (%s)",
-                                (subject_name,),
-                            )
-                            conn.commit()
-                            st.success(f"✅ Subject '{subject_name}' added!")
-                        except mysql.connector.Error as err:
-                            st.error(f"Error: {err}")
-                        finally:
-                            cursor.close()
-                            conn.close()
+                    if not subject_name:
+                        st.error("Please enter a subject name.")
+                    else:
+                        conn = get_db_connection()
+                        if conn:
+                            cursor = conn.cursor()
+                            try:
+                                cursor.execute(
+                                    "INSERT INTO subjects (subject_name)"
+                                    " VALUES (%s)",
+                                    (subject_name,),
+                                )
+                                conn.commit()
+                                st.success(
+                                    f"✅ Subject '{subject_name}' added!"
+                                )
+                            except mysql.connector.Error as err:
+                                if err.errno == 1062:
+                                    st.error(
+                                        "This subject name already exists."
+                                    )
+                                else:
+                                    st.error(f"Error: {err}")
+                            finally:
+                                cursor.close()
+                                conn.close()
 
     # PAGE: DELETE STUDENT
     elif choice == "❌ Delete Student (Admin)":
@@ -662,21 +750,18 @@ else:
                         if confirm:
                             sid_to_delete = stud_dict[selected_stud]
                             cursor.execute(
-                                "DELETE FROM attendance WHERE student_id = %s",
-                                (sid_to_delete,),
-                            )
-                            cursor.execute(
-                                "DELETE FROM student_marks WHERE student_id ="
-                                " %s",
-                                (sid_to_delete,),
-                            )
-                            cursor.execute(
                                 "DELETE FROM students WHERE student_id = %s",
                                 (sid_to_delete,),
                             )
                             conn.commit()
                             st.success("Deleted successfully!")
                             st.rerun()
+                        else:
+                            st.warning(
+                                "Please check the confirmation box first."
+                            )
+                else:
+                    st.info("No students found.")
                 cursor.close()
                 conn.close()
 
@@ -709,6 +794,12 @@ else:
                             conn.commit()
                             st.success("Deleted successfully!")
                             st.rerun()
+                        else:
+                            st.warning(
+                                "Please check the confirmation box first."
+                            )
+                else:
+                    st.info("No subjects found.")
                 cursor.close()
                 conn.close()
 
@@ -740,5 +831,7 @@ else:
                     conn.commit()
                     st.success("Deleted successfully!")
                     st.rerun()
+            else:
+                st.info("No assessments found.")
             cursor.close()
             conn.close()
