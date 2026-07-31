@@ -1,126 +1,125 @@
 from datetime import date
-import hashlib
 import mysql.connector
 import streamlit as st
 
-st.set_page_config(
-    page_title="School Management System", page_icon="🎓", layout="wide"
-)
 
-
-# --- HELPERS ---
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
-
-
-# --- DATABASE CONNECTION ---
+# Database connection with a 5-second timeout to prevent UI freezes
 def get_db_connection():
     try:
-        cfg = st.secrets["mysql"]
-        return mysql.connector.connect(
-            host=cfg["host"],
-            port=cfg["port"],
-            user=cfg["user"],
-            password=cfg["password"],
-            database=cfg["database"],
+        connection = mysql.connector.connect(
+            host="mysql-327a1c97-school-scheduler.j.aivencloud.com",
+            port=24033,
+            user="avnadmin",
+            password="AVNS_QcMH792wuF0McXRXNc1",
+            database="defaultdb",
             connection_timeout=5,
         )
-    except Exception as err:
+        return connection
+    except mysql.connector.Error as err:
         st.error(f"Error connecting to cloud database: {err}")
         return None
 
 
-# --- INITIAL SETUP ---
-def setup_database():
+# Cache the database setup so it runs only once on startup
+@st.cache_resource
+def setup_default_admin():
     conn = get_db_connection()
     if not conn:
         return
-
-    tables = [
-        """
-        CREATE TABLE IF NOT EXISTS admin (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            username VARCHAR(255) UNIQUE NOT NULL,
-            password VARCHAR(255) NOT NULL
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS students (
-            student_id INT AUTO_INCREMENT PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            roll_number VARCHAR(100) UNIQUE NOT NULL
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS subjects (
-            subject_id INT AUTO_INCREMENT PRIMARY KEY,
-            subject_name VARCHAR(255) NOT NULL
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS assessments (
-            assessment_id INT AUTO_INCREMENT PRIMARY KEY,
-            subject_id INT,
-            title VARCHAR(255) NOT NULL,
-            type VARCHAR(50),
-            due_date DATE,
-            total_marks INT,
-            FOREIGN KEY (subject_id) REFERENCES subjects(subject_id) ON DELETE CASCADE
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS student_marks (
-            mark_id INT AUTO_INCREMENT PRIMARY KEY,
-            student_id INT,
-            assessment_id INT,
-            marks_obtained INT,
-            FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
-            FOREIGN KEY (assessment_id) REFERENCES assessments(assessment_id) ON DELETE CASCADE,
-            UNIQUE KEY unique_student_assessment (student_id, assessment_id)
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS attendance (
-            attendance_id INT AUTO_INCREMENT PRIMARY KEY,
-            student_id INT,
-            subject_id INT,
-            date DATE,
-            status VARCHAR(20),
-            FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
-            FOREIGN KEY (subject_id) REFERENCES subjects(subject_id) ON DELETE CASCADE,
-            UNIQUE KEY unique_daily_attendance (student_id, subject_id, date)
-        );
-        """,
-    ]
-
+    cursor = conn.cursor()
     try:
-        with conn.cursor() as cursor:
-            for query in tables:
-                cursor.execute(query)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS admin (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(255) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL
+            );
+        """
+        )
 
-            # Insert default admin with hashed password if not present
-            default_pass_hash = hash_password("root")
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS students (
+                student_id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                roll_number VARCHAR(100) UNIQUE NOT NULL
+            );
+        """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subjects (
+                subject_id INT AUTO_INCREMENT PRIMARY KEY,
+                subject_name VARCHAR(255) NOT NULL
+            );
+        """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS assessments (
+                assessment_id INT AUTO_INCREMENT PRIMARY KEY,
+                subject_id INT,
+                title VARCHAR(255) NOT NULL,
+                type VARCHAR(50),
+                due_date DATE,
+                total_marks INT,
+                FOREIGN KEY (subject_id) REFERENCES subjects(subject_id) ON DELETE CASCADE
+            );
+        """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS student_marks (
+                mark_id INT AUTO_INCREMENT PRIMARY KEY,
+                student_id INT,
+                assessment_id INT,
+                marks_obtained INT,
+                FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
+                FOREIGN KEY (assessment_id) REFERENCES assessments(assessment_id) ON DELETE CASCADE
+            );
+        """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance (
+                attendance_id INT AUTO_INCREMENT PRIMARY KEY,
+                student_id INT,
+                subject_id INT,
+                date DATE,
+                status VARCHAR(20),
+                FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
+                FOREIGN KEY (subject_id) REFERENCES subjects(subject_id) ON DELETE CASCADE
+            );
+        """
+        )
+
+        # Insert/update default admin account
+        cursor.execute("SELECT * FROM admin WHERE username = 'admin'")
+        if cursor.fetchone():
             cursor.execute(
-                """
-                INSERT INTO admin (username, password) 
-                VALUES ('admin', %s) 
-                ON DUPLICATE KEY UPDATE username=username
-            """,
-                (default_pass_hash,),
+                "UPDATE admin SET password = 'root' WHERE username = 'admin'"
+            )
+        else:
+            cursor.execute(
+                "INSERT INTO admin (username, password) VALUES ('admin',"
+                " 'root')"
             )
         conn.commit()
     except mysql.connector.Error as err:
-        st.error(f"Error setting up database: {err}")
+        st.error(f"Error setting up tables or admin: {err}")
     finally:
+        cursor.close()
         conn.close()
 
 
-# Run DB initialization once per app start
-if "db_initialized" not in st.session_state:
-    setup_database()
-    st.session_state["db_initialized"] = True
+setup_default_admin()
 
-# --- AUTHENTICATION & SESSION STATE ---
+# Login setup
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
 if "role" not in st.session_state:
@@ -131,20 +130,23 @@ def verify_admin(username, password):
     conn = get_db_connection()
     if not conn:
         return False
-    hashed = hash_password(password)
-    with conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT id FROM admin WHERE username = %s AND password = %s",
-            (username, hashed),
-        )
-        user = cursor.fetchone()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM admin WHERE username = %s AND password = %s",
+        (username, password),
+    )
+    user = cursor.fetchone()
+    cursor.close()
     conn.close()
     return user is not None
 
 
-# --- APP ROUTING ---
+st.set_page_config(
+    page_title="School Management System", page_icon="🎓", layout="wide"
+)
 st.title("🎓 School Management System")
 
+# Login View
 if not st.session_state["logged_in"]:
     st.subheader("Select Login Type")
     login_type = st.radio("Choose Role:", ["Teacher", "Head Teacher (Admin)"])
@@ -167,6 +169,7 @@ if not st.session_state["logged_in"]:
             else:
                 st.error("Invalid Username or Password!")
 
+# Main App View
 else:
     st.sidebar.title(f"Logged in as: {st.session_state['role'].upper()}")
     if st.sidebar.button("Logout"):
@@ -189,97 +192,154 @@ else:
     ]
     choice = st.sidebar.selectbox("Navigation", menu)
 
-    # 1. Dashboard
+    # Dashboard
     if choice == "Dashboard & Reminders":
         st.header("🔔 Upcoming Assignments & Tests")
         conn = get_db_connection()
         if conn:
-            with conn.cursor() as cursor:
-                today = date.today().strftime("%Y-%m-%d")
-                query = """
-                    SELECT a.title, a.type, a.due_date, s.subject_name 
-                    FROM assessments a
-                    JOIN subjects s ON a.subject_id = s.subject_id
-                    WHERE a.due_date >= %s
-                    ORDER BY a.due_date ASC
-                """
-                cursor.execute(query, (today,))
-                reminders = cursor.fetchall()
-            conn.close()
+            cursor = conn.cursor()
+            today = date.today().strftime("%Y-%m-%d")
+            query = """
+                SELECT a.title, a.type, a.due_date, s.subject_name 
+                FROM assessments a
+                JOIN subjects s ON a.subject_id = s.subject_id
+                WHERE a.due_date >= %s
+                ORDER BY a.due_date ASC
+            """
+            cursor.execute(query, (today,))
+            reminders = cursor.fetchall()
 
             if reminders:
                 for title, type_, due, subject in reminders:
                     st.info(
-                        f"**[{type_.upper()}]** {title} ({subject}) — **Due:** {due}"
+                        f"**[{type_.upper()}]** {title} ({subject}) — **Due:**"
+                        f" {due}"
                     )
             else:
                 st.success("No upcoming tests or assignments!")
+            cursor.close()
+            conn.close()
 
-    # 2. Search Student
+    # Search Student
     elif choice == "Search Student by Roll":
         st.header("🔍 Search Student")
         search_query = st.text_input("Enter Roll Number or Name")
-        if st.button("Search") and search_query:
+        if st.button("Search"):
             conn = get_db_connection()
             if conn:
-                with conn.cursor() as cursor:
-                    query = """
-                        SELECT student_id, name, roll_number 
-                        FROM students 
-                        WHERE roll_number = %s OR name LIKE %s
-                    """
-                    cursor.execute(query, (search_query, f"%{search_query}%"))
-                    students = cursor.fetchall()
+                cursor = conn.cursor()
+                query = """
+                    SELECT student_id, name, roll_number 
+                    FROM students 
+                    WHERE LOWER(TRIM(CAST(roll_number AS CHAR))) = LOWER(TRIM(%s))
+                       OR LOWER(name) LIKE LOWER(%s)
+                """
+                cursor.execute(query, (search_query, f"%{search_query}%"))
+                students = cursor.fetchall()
 
-                    if not students:
-                        st.warning("No student found matching query.")
-                    else:
-                        for s_id, name, roll in students:
-                            st.subheader(f"📌 {name} (Roll No: {roll})")
+                if not students:
+                    st.warning("No student found matching query.")
+                else:
+                    for s_id, name, roll in students:
+                        st.subheader(f"📌 {name} (Roll No: {roll})")
 
-                            cursor.execute(
-                                "SELECT status FROM attendance WHERE student_id = %s",
-                                (s_id,),
+                        cursor.execute(
+                            "SELECT status FROM attendance WHERE student_id ="
+                            " %s",
+                            (s_id,),
+                        )
+                        att = cursor.fetchall()
+                        if att:
+                            presents = sum(
+                                1 for status in att if status[0] == "Present"
                             )
-                            att = cursor.fetchall()
-                            if att:
-                                presents = sum(
-                                    1 for status in att if status[0] == "Present"
-                                )
-                                pct = (presents / len(att)) * 100
-                                st.write(
-                                    f"**Attendance:** {presents}/{len(att)} days ({pct:.1f}%)"
-                                )
-                            else:
-                                st.write("**Attendance:** No records found.")
+                            pct = (presents / len(att)) * 100
+                            st.write(
+                                f"**Attendance:** {presents}/{len(att)} days"
+                                f" ({pct:.1f}%)"
+                            )
+                        else:
+                            st.write("**Attendance:** No records found.")
 
-                            marks_q = """
-                                SELECT a.title, m.marks_obtained, a.total_marks
-                                FROM student_marks m
-                                JOIN assessments a ON m.assessment_id = a.assessment_id
-                                WHERE m.student_id = %s
-                            """
-                            cursor.execute(marks_q, (s_id,))
-                            marks = cursor.fetchall()
-                            if marks:
-                                st.write("**Marks:**")
-                                for title, score, total in marks:
-                                    st.write(f"- {title}: {score}/{total}")
-                            else:
-                                st.write("**Marks:** No marks recorded.")
+                        marks_q = """
+                            SELECT a.title, m.marks_obtained, a.total_marks
+                            FROM student_marks m
+                            JOIN assessments a ON m.assessment_id = a.assessment_id
+                            WHERE m.student_id = %s
+                        """
+                        cursor.execute(marks_q, (s_id,))
+                        marks = cursor.fetchall()
+                        if marks:
+                            st.write("**Marks:**")
+                            for title, score, total in marks:
+                                st.write(f"- {title}: {score}/{total}")
+                        else:
+                            st.write("**Marks:** No marks recorded.")
+                cursor.close()
                 conn.close()
 
-    # 4. Mark Attendance (Updated with UPSERT)
+    # View Reports
+    elif choice == "View Reports":
+        st.header("📊 Student Performance Reports")
+        conn = get_db_connection()
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT student_id, name, roll_number FROM students"
+            )
+            students = cursor.fetchall()
+            if not students:
+                st.info("No students registered yet.")
+            else:
+                for s_id, name, roll in students:
+                    with st.expander(f"Student: {name} | Roll No: {roll}"):
+                        cursor.execute(
+                            "SELECT status FROM attendance WHERE student_id ="
+                            " %s",
+                            (s_id,),
+                        )
+                        att = cursor.fetchall()
+                        if att:
+                            presents = sum(
+                                1 for status in att if status[0] == "Present"
+                            )
+                            st.write(
+                                f"**Attendance:** {presents}/{len(att)} days"
+                                f" ({(presents/len(att))*100:.1f}%)"
+                            )
+                        else:
+                            st.write("**Attendance:** No records found.")
+
+                        marks_q = """
+                            SELECT a.title, m.marks_obtained, a.total_marks
+                            FROM student_marks m
+                            JOIN assessments a ON m.assessment_id = a.assessment_id
+                            WHERE m.student_id = %s
+                        """
+                        cursor.execute(marks_q, (s_id,))
+                        marks = cursor.fetchall()
+                        if marks:
+                            st.write("**Marks:**")
+                            for title, score, total in marks:
+                                st.write(f"- {title}: **{score}/{total}**")
+                        else:
+                            st.write("**Marks:** No marks recorded.")
+            cursor.close()
+            conn.close()
+
+    # Mark Attendance
     elif choice == "Mark Attendance":
         st.header("📅 Mark Attendance")
         conn = get_db_connection()
         if conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT subject_id, subject_name FROM subjects")
-                subjects = cursor.fetchall()
-                cursor.execute("SELECT student_id, name, roll_number FROM students")
-                students = cursor.fetchall()
-            conn.close()
+            cursor = conn.cursor()
+            cursor.execute("SELECT subject_id, subject_name FROM subjects")
+            subjects = cursor.fetchall()
+
+            cursor.execute(
+                "SELECT student_id, name, roll_number FROM students"
+            )
+            students = cursor.fetchall()
 
             if not subjects:
                 st.warning("Please add at least one subject first.")
@@ -287,46 +347,402 @@ else:
                 st.warning("Please add students first.")
             else:
                 subj_dict = {f"{s[1]} (ID: {s[0]})": s[0] for s in subjects}
-                selected_subj_str = st.selectbox("Select Subject", list(subj_dict.keys()))
+                selected_subj_str = st.selectbox(
+                    "Select Subject", list(subj_dict.keys())
+                )
                 selected_subj_id = subj_dict[selected_subj_str]
+
                 att_date = st.date_input("Attendance Date", date.today())
 
                 st.subheader("Student List")
-                with st.form("attendance_form"):
-                    attendance_status = {}
-                    for s_id, name, roll in students:
-                        status = st.radio(
-                            f"{name} (Roll: {roll})",
-                            ["Present", "Absent"],
-                            key=f"att_{s_id}",
-                            horizontal=True,
+                attendance_status = {}
+                for s_id, name, roll in students:
+                    status = st.radio(
+                        f"{name} (Roll: {roll})",
+                        ["Present", "Absent"],
+                        key=f"att_{s_id}",
+                        horizontal=True,
+                    )
+                    attendance_status[s_id] = status
+
+                if st.button("Save Attendance"):
+                    try:
+                        for s_id, status in attendance_status.items():
+                            cursor.execute(
+                                """
+                                INSERT INTO attendance (student_id, subject_id, date, status)
+                                VALUES (%s, %s, %s, %s)
+                            """,
+                                (
+                                    s_id,
+                                    selected_subj_id,
+                                    att_date.strftime("%Y-%m-%d"),
+                                    status,
+                                ),
+                            )
+                        conn.commit()
+                        st.success("Attendance saved successfully!")
+                    except mysql.connector.Error as err:
+                        st.error(f"Error saving attendance: {err}")
+
+            cursor.close()
+            conn.close()
+
+    # Record Assessment Marks
+    elif choice == "Record Assessment Marks":
+        st.header("💯 Record Assessment Marks")
+        conn = get_db_connection()
+        if conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT a.assessment_id, a.title, a.type, a.total_marks, s.subject_name
+                FROM assessments a
+                JOIN subjects s ON a.subject_id = s.subject_id
+            """
+            cursor.execute(query)
+            assessments = cursor.fetchall()
+
+            cursor.execute(
+                "SELECT student_id, name, roll_number FROM students"
+            )
+            students = cursor.fetchall()
+
+            if not assessments:
+                st.warning("Please create a test or assignment first.")
+            elif not students:
+                st.warning("Please add students first.")
+            else:
+                ass_dict = {
+                    f"[{a[2].upper()}] {a[1]} ({a[4]}) - Max Marks: {a[3]}": (
+                        a[0],
+                        a[3],
+                    )
+                    for a in assessments
+                }
+                selected_ass_str = st.selectbox(
+                    "Select Assessment", list(ass_dict.keys())
+                )
+                selected_ass_id, total_marks = ass_dict[selected_ass_str]
+
+                st.subheader("Enter Marks Obtained")
+                marks_dict = {}
+                for s_id, name, roll in students:
+                    marks = st.number_input(
+                        f"{name} (Roll: {roll})",
+                        min_value=0,
+                        max_value=total_marks,
+                        value=0,
+                        key=f"mark_{s_id}",
+                    )
+                    marks_dict[s_id] = marks
+
+                if st.button("Save Marks"):
+                    try:
+                        for s_id, obtained in marks_dict.items():
+                            # Check if marks already recorded for this student & assessment
+                            cursor.execute(
+                                """
+                                SELECT mark_id FROM student_marks 
+                                WHERE student_id = %s AND assessment_id = %s
+                            """,
+                                (s_id, selected_ass_id),
+                            )
+                            existing = cursor.fetchone()
+
+                            if existing:
+                                cursor.execute(
+                                    """
+                                    UPDATE student_marks SET marks_obtained = %s 
+                                    WHERE mark_id = %s
+                                """,
+                                    (obtained, existing[0]),
+                                )
+                            else:
+                                cursor.execute(
+                                    """
+                                    INSERT INTO student_marks (student_id, assessment_id, marks_obtained)
+                                    VALUES (%s, %s, %s)
+                                """,
+                                    (s_id, selected_ass_id, obtained),
+                                )
+                        conn.commit()
+                        st.success("Marks recorded successfully!")
+                    except mysql.connector.Error as err:
+                        st.error(f"Error saving marks: {err}")
+
+            cursor.close()
+            conn.close()
+
+    # Create Assessment
+    elif choice == "Create Test / Assignment":
+        st.header("📝 Create Test or Assignment")
+        conn = get_db_connection()
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT subject_id, subject_name FROM subjects")
+            subjects = cursor.fetchall()
+            if not subjects:
+                st.warning("Please add subjects first.")
+            else:
+                subj_dict = {
+                    f"{name} (ID: {sid})": sid for sid, name in subjects
+                }
+                selected_subj = st.selectbox(
+                    "Select Subject", list(subj_dict.keys())
+                )
+                title = st.text_input("Title (e.g. Unit Test 1)")
+                type_ = st.selectbox("Type", ["Test", "Assignment"])
+                due_date = st.date_input("Due Date")
+                total_marks = st.number_input(
+                    "Total Marks", min_value=1, value=100
+                )
+
+                if st.button("Create Assessment"):
+                    cursor.execute(
+                        "INSERT INTO assessments (subject_id, title, type,"
+                        " due_date, total_marks) VALUES (%s, %s, %s, %s, %s)",
+                        (
+                            subj_dict[selected_subj],
+                            title,
+                            type_,
+                            due_date.strftime("%Y-%m-%d"),
+                            total_marks,
+                        ),
+                    )
+                    conn.commit()
+                    st.success("Assessment created successfully!")
+            cursor.close()
+            conn.close()
+
+    # Delete Assessment
+    elif choice == "Delete / Undo Test or Assignment":
+        st.header("🗑️ Delete / Undo Test or Assignment")
+        conn = get_db_connection()
+        if conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT a.assessment_id, a.title, a.type, s.subject_name 
+                FROM assessments a 
+                JOIN subjects s ON a.subject_id = s.subject_id
+            """
+            cursor.execute(query)
+            assessments = cursor.fetchall()
+
+            if not assessments:
+                st.info("No assessments found in the system.")
+            else:
+                ass_dict = {
+                    f"[{a_type.upper()}] {title} - {subj_name} (ID: {aid})": aid
+                    for aid, title, a_type, subj_name in assessments
+                }
+                selected_ass = st.selectbox(
+                    "Select Test/Assignment to Delete", list(ass_dict.keys())
+                )
+
+                if st.button("Delete Assessment", type="primary"):
+                    aid_to_delete = ass_dict[selected_ass]
+                    try:
+                        cursor.execute(
+                            "DELETE FROM student_marks WHERE assessment_id ="
+                            " %s",
+                            (aid_to_delete,),
                         )
-                        attendance_status[s_id] = status
+                        cursor.execute(
+                            "DELETE FROM assessments WHERE assessment_id = %s",
+                            (aid_to_delete,),
+                        )
+                        conn.commit()
+                        st.success(
+                            "Assessment and its marks deleted successfully!"
+                        )
+                        st.rerun()
+                    except mysql.connector.Error as err:
+                        st.error(f"Error deleting assessment: {err}")
+            cursor.close()
+            conn.close()
 
-                    submitted = st.form_submit_button("Save Attendance")
+    # Add Student
+    elif choice == "Add Student (Admin)":
+        st.header("➕ Add New Student")
+        if st.session_state["role"] != "admin":
+            st.error("🔒 Head Teacher / Admin access required!")
+        else:
+            name = st.text_input("Student Name")
+            roll = st.text_input("Roll Number")
+            if st.button("Save Student"):
+                conn = get_db_connection()
+                if conn:
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute(
+                            "INSERT INTO students (name, roll_number) VALUES"
+                            " (%s, %s)",
+                            (name, roll),
+                        )
+                        conn.commit()
+                        st.success(f"Student '{name}' added successfully!")
+                    except mysql.connector.Error as err:
+                        st.error(f"Error: {err}")
+                    finally:
+                        cursor.close()
+                        conn.close()
 
-                if submitted:
-                    conn = get_db_connection()
-                    if conn:
-                        try:
-                            with conn.cursor() as cursor:
-                                for s_id, status in attendance_status.items():
+    # Delete Student
+    elif choice == "Delete Student (Admin)":
+        st.header("🗑️ Delete Student")
+        if st.session_state["role"] != "admin":
+            st.error("🔒 Head Teacher / Admin access required!")
+        else:
+            conn = get_db_connection()
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT student_id, name, roll_number FROM students"
+                )
+                students = cursor.fetchall()
+
+                if not students:
+                    st.info("No students found in the database.")
+                else:
+                    stud_dict = {
+                        f"{name} (Roll: {roll})": sid
+                        for sid, name, roll in students
+                    }
+                    selected_stud = st.selectbox(
+                        "Select Student to Delete", list(stud_dict.keys())
+                    )
+
+                    confirm = st.checkbox(
+                        "I confirm I want to permanently delete this student"
+                    )
+                    if st.button("Delete Student", type="primary"):
+                        if confirm:
+                            sid_to_delete = stud_dict[selected_stud]
+                            try:
+                                cursor.execute(
+                                    "DELETE FROM attendance WHERE student_id ="
+                                    " %s",
+                                    (sid_to_delete,),
+                                )
+                                cursor.execute(
+                                    "DELETE FROM student_marks WHERE student_id"
+                                    " = %s",
+                                    (sid_to_delete,),
+                                )
+                                cursor.execute(
+                                    "DELETE FROM students WHERE student_id ="
+                                    " %s",
+                                    (sid_to_delete,),
+                                )
+                                conn.commit()
+                                st.success(
+                                    "Student records deleted successfully!"
+                                )
+                                st.rerun()
+                            except mysql.connector.Error as err:
+                                st.error(f"Error deleting student: {err}")
+                        else:
+                            st.warning(
+                                "Please check the confirmation box first."
+                            )
+                cursor.close()
+                conn.close()
+
+    # Add Subject
+    elif choice == "Add Subject (Admin)":
+        st.header("📘 Add New Subject")
+        if st.session_state["role"] != "admin":
+            st.error("🔒 Head Teacher / Admin access required!")
+        else:
+            subject_name = st.text_input("Subject Name")
+            if st.button("Save Subject"):
+                conn = get_db_connection()
+                if conn:
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute(
+                            "INSERT INTO subjects (subject_name) VALUES (%s)",
+                            (subject_name,),
+                        )
+                        conn.commit()
+                        st.success(
+                            f"Subject '{subject_name}' added successfully!"
+                        )
+                    except mysql.connector.Error as err:
+                        st.error(f"Error: {err}")
+                    finally:
+                        cursor.close()
+                        conn.close()
+
+    # Delete Subject
+    elif choice == "Delete Subject (Admin)":
+        st.header("🗑️ Delete Subject")
+        if st.session_state["role"] != "admin":
+            st.error("🔒 Head Teacher / Admin access required!")
+        else:
+            conn = get_db_connection()
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT subject_id, subject_name FROM subjects"
+                )
+                subjects = cursor.fetchall()
+
+                if not subjects:
+                    st.info("No subjects found in the database.")
+                else:
+                    subj_dict = {
+                        f"{name} (ID: {sid})": sid for sid, name in subjects
+                    }
+                    selected_subj = st.selectbox(
+                        "Select Subject to Delete", list(subj_dict.keys())
+                    )
+
+                    confirm = st.checkbox(
+                        "I confirm I want to delete this subject and"
+                        " associated data"
+                    )
+                    if st.button("Delete Subject", type="primary"):
+                        if confirm:
+                            sub_id_to_delete = subj_dict[selected_subj]
+                            try:
+                                cursor.execute(
+                                    "SELECT assessment_id FROM assessments"
+                                    " WHERE subject_id = %s",
+                                    (sub_id_to_delete,),
+                                )
+                                ass_ids = [row[0] for row in cursor.fetchall()]
+
+                                for aid in ass_ids:
                                     cursor.execute(
-                                        """
-                                        INSERT INTO attendance (student_id, subject_id, date, status)
-                                        VALUES (%s, %s, %s, %s)
-                                        ON DUPLICATE KEY UPDATE status = VALUES(status)
-                                        """,
-                                        (
-                                            s_id,
-                                            selected_subj_id,
-                                            att_date.strftime("%Y-%m-%d"),
-                                            status,
-                                        ),
+                                        "DELETE FROM student_marks WHERE"
+                                        " assessment_id = %s",
+                                        (aid,),
                                     )
-                            conn.commit()
-                            st.success("Attendance saved successfully!")
-                        except mysql.connector.Error as err:
-                            st.error(f"Error saving attendance: {err}")
-                        finally:
-                            conn.close()
+
+                                cursor.execute(
+                                    "DELETE FROM assessments WHERE subject_id ="
+                                    " %s",
+                                    (sub_id_to_delete,),
+                                )
+                                cursor.execute(
+                                    "DELETE FROM attendance WHERE subject_id ="
+                                    " %s",
+                                    (sub_id_to_delete,),
+                                )
+                                cursor.execute(
+                                    "DELETE FROM subjects WHERE subject_id ="
+                                    " %s",
+                                    (sub_id_to_delete,),
+                                )
+                                conn.commit()
+                                st.success("Subject deleted successfully!")
+                                st.rerun()
+                            except mysql.connector.Error as err:
+                                st.error(f"Error deleting subject: {err}")
+                        else:
+                            st.warning(
+                                "Please check the confirmation box first."
+                            )
+                cursor.close()
+                conn.close()
