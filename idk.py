@@ -3,7 +3,7 @@ import mysql.connector
 import streamlit as st
 
 
-# Database connection with a 5-second timeout to prevent UI freezes
+# to prevent freez - reconnector
 def get_db_connection():
     try:
         connection = mysql.connector.connect(
@@ -20,7 +20,7 @@ def get_db_connection():
         return None
 
 
-# Cache the database setup so it runs only once on startup
+#startup
 @st.cache_resource
 def setup_default_admin():
     conn = get_db_connection()
@@ -98,7 +98,7 @@ def setup_default_admin():
         """
         )
 
-        # Insert/update default admin account
+        # admincount
         cursor.execute("SELECT * FROM admin WHERE username = 'admin'")
         if cursor.fetchone():
             cursor.execute(
@@ -146,7 +146,7 @@ st.set_page_config(
 )
 st.title("🎓 School Management System")
 
-# Login View
+# login View(niko)
 if not st.session_state["logged_in"]:
     st.subheader("Select Login Type")
     login_type = st.radio("Choose Role:", ["Teacher", "Head Teacher (Admin)"])
@@ -169,7 +169,7 @@ if not st.session_state["logged_in"]:
             else:
                 st.error("Invalid Username or Password!")
 
-# Main App View
+# main App View(mikos code)
 else:
     st.sidebar.title(f"Logged in as: {st.session_state['role'].upper()}")
     if st.sidebar.button("Logout"):
@@ -192,7 +192,7 @@ else:
     ]
     choice = st.sidebar.selectbox("Navigation", menu)
 
-    # Dashboard
+    # Dashboard(redesigned)
     if choice == "Dashboard & Reminders":
         st.header("🔔 Upcoming Assignments & Tests")
         conn = get_db_connection()
@@ -220,7 +220,7 @@ else:
             cursor.close()
             conn.close()
 
-    # Search Student
+    # Search student(speed)
     elif choice == "Search Student by Roll":
         st.header("🔍 Search Student")
         search_query = st.text_input("Enter Roll Number or Name")
@@ -278,7 +278,7 @@ else:
                 cursor.close()
                 conn.close()
 
-    # View Reports
+    # View reports(fixed error)
     elif choice == "View Reports":
         st.header("📊 Student Performance Reports")
         conn = get_db_connection()
@@ -327,7 +327,7 @@ else:
             cursor.close()
             conn.close()
 
-    # Mark Attendance
+    # mark attendance
     elif choice == "Mark Attendance":
         st.header("📅 Mark Attendance")
         conn = get_db_connection()
@@ -388,7 +388,7 @@ else:
             cursor.close()
             conn.close()
 
-    # Record Assessment Marks
+    # Record Assessment Marks(error fixed code)
     elif choice == "Record Assessment Marks":
         st.header("💯 Record Assessment Marks")
         conn = get_db_connection()
@@ -473,7 +473,7 @@ else:
             cursor.close()
             conn.close()
 
-    # Create Assessment
+    # Create assessment(geminin fixed code)
     elif choice == "Create Test / Assignment":
         st.header("📝 Create Test or Assignment")
         conn = get_db_connection()
@@ -514,7 +514,7 @@ else:
             cursor.close()
             conn.close()
 
-    # Delete Assessment
+    # delete assessment
     elif choice == "Delete / Undo Test or Assignment":
         st.header("🗑️ Delete / Undo Test or Assignment")
         conn = get_db_connection()
@@ -561,7 +561,7 @@ else:
             cursor.close()
             conn.close()
 
-    # Add Student
+    # add student
     elif choice == "Add Student (Admin)":
         st.header("➕ Add New Student")
         if st.session_state["role"] != "admin":
@@ -587,7 +587,7 @@ else:
                         cursor.close()
                         conn.close()
 
-    # Delete Student
+    # Delete student(speed)
     elif choice == "Delete Student (Admin)":
         st.header("🗑️ Delete Student")
         if st.session_state["role"] != "admin":
@@ -648,7 +648,7 @@ else:
                 cursor.close()
                 conn.close()
 
-    # Add Subject
+    # Add subject(error fixed-niko)
     elif choice == "Add Subject (Admin)":
         st.header("📘 Add New Subject")
         if st.session_state["role"] != "admin":
@@ -674,7 +674,7 @@ else:
                         cursor.close()
                         conn.close()
 
-    # Delete Subject
+    # DeleteSubject
     elif choice == "Delete Subject (Admin)":
         st.header("🗑️ Delete Subject")
         if st.session_state["role"] != "admin":
