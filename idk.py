@@ -20,7 +20,7 @@ def get_db_connection():
         return None
 
 
-#startup
+#startup sql-freeze fixed
 @st.cache_resource
 def setup_default_admin():
     conn = get_db_connection()
